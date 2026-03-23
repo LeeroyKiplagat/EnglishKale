@@ -3,6 +3,10 @@
 import { getLessons, type Lesson } from "@/lib/lesson-data";
 import { supabase } from "@/lib/supabase-browser";
 
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 export async function signInWithEmail(email: string, password: string) {
   if (!supabase) throw new Error("Supabase is not configured.");
   const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -11,12 +15,13 @@ export async function signInWithEmail(email: string, password: string) {
 
 export async function signUpWithEmail(email: string, password: string, displayName: string) {
   if (!supabase) throw new Error("Supabase is not configured.");
-  const { error } = await supabase.auth.signUp({
+  const { data, error } = await supabase.auth.signUp({
     email,
     password,
     options: { data: { display_name: displayName } },
   });
   if (error) throw new Error(error.message);
+  return data.session ?? null;
 }
 
 export async function getCurrentUserId() {
@@ -39,8 +44,30 @@ export async function submitConsent(payload: {
   c5: boolean;
 }) {
   if (!supabase) throw new Error("Supabase is not configured.");
+
+  // RLS insert policy requires a valid auth JWT so auth.uid() resolves.
+  try {
+    await supabase.auth.refreshSession();
+  } catch {
+    // Fall back to session checks below when refresh is unavailable.
+  }
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  if (!sessionData.session?.access_token) {
+    throw new Error("Your session is not active. Please sign in again.");
+  }
+
   const userId = await getCurrentUserId();
   if (!userId) throw new Error("Not authenticated.");
+
+  // Consent is one record per user. If it already exists, treat as success.
+  const { data: existing, error: existingError } = await supabase
+    .from("consent_records")
+    .select("id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (existingError) throw new Error(existingError.message);
+  if (existing?.id) return;
 
   const { error } = await supabase.from("consent_records").insert({
     user_id: userId,
@@ -54,8 +81,20 @@ export async function submitConsent(payload: {
   if (error) throw new Error(error.message);
 }
 
+export async function hasSubmittedConsent(userId: string): Promise<boolean> {
+  if (!supabase) return false;
+  const { data, error } = await supabase
+    .from("consent_records")
+    .select("id")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return Boolean(data?.id);
+}
+
 export async function fetchLessonsForCourse(courseId: string): Promise<Lesson[]> {
   if (!supabase) return getLessons(courseId);
+  if (!isUuid(courseId)) return getLessons(courseId);
 
   const { data, error } = await supabase.from("lessons").select("*").eq("course_id", courseId).order("sort_order");
   if (error || !data) return getLessons(courseId);

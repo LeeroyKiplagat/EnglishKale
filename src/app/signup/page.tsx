@@ -26,7 +26,11 @@ export default function SignupPage() {
     setError(null);
     try {
       const displayName = `${firstName.trim()} ${lastName.trim()}`.trim();
-      await signUpWithEmail(email.trim(), password, displayName);
+      const session = await signUpWithEmail(email.trim(), password, displayName);
+      if (!session) {
+        setError("Please confirm your email first, then sign in to continue.");
+        return;
+      }
       router.push("/consent");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Sign-up failed.");
